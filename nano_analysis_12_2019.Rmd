@@ -1,0 +1,3569 @@
+---
+title: "Nanostring Analysis"
+author: "Evan Johnson"
+date: "12/5/2019"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    theme: "flatly"
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+suppressPackageStartupMessages({
+  library(SummarizedExperiment)
+  library(TBSignatureProfiler)
+  library(DESeq2)
+  library(Rtsne)
+  library(umap)
+  library(ggplot2)
+  library(limma)
+  library(DT)
+  library(ComplexHeatmap)
+  })
+```
+
+# Read in the data {.tabset}
+```{r Load Data}
+# Read in the data
+counts <- read.csv("~/Dropbox/projects/nanostring_analysis/Analysis_2/T023_S024_RawData_Filtered_DataOnly.csv", header=T,row.names=1)
+coldata <- read.table("~/Dropbox/projects/nanostring_analysis/meta_data_all.txt", header=T, row.names=1)
+
+# Fix EXCEL renaming of SEPT4!!
+rownames(counts)[rownames(counts)=="Sep-04"] = "SEPT4"
+
+# reorder Levels of TB_status so TB shows up first in plots 
+coldata$TB_status = factor(coldata$TB_status, levels=c("TB","LTBI"))
+
+# reorder the counts to match the coldata
+counts <- counts[,match(rownames(coldata),colnames(counts))]
+
+## create a SummarizedExperiment
+nano_data_all<- SummarizedExperiment(assays=list(counts=as.matrix(counts[1:107,])),
+                     colData = coldata)
+
+# Make a logcounts, CPM and log_cpm assay
+nano_data_all <- mkAssay(nano_data_all, log = TRUE, counts_to_CPM = TRUE)
+
+### As of 4/2021: remove parasites per request of the reviewers--set all parasite analyses below as eval=F
+nano_data_all <- nano_data_all[,!(colData(nano_data_all)$Parasites=="Yes")]
+
+## notice that we have 4 assays now
+#assays(nano_data_all)
+
+# now define as SE with no comorbs
+nano_data_nocomorbs = nano_data_all[,c(1:179)]
+
+## write to file
+#saveRDS(nano_data_all,file="nano_data_all.rds")
+
+```
+
+## For risk factors
+```{r }
+colData(nano_data_all)$TB_LTBI <- colData(nano_data_all)$TB_status
+
+levels(colData(nano_data_all)$TB_status) <- c("TB", "LTBI", "LTBI_Alcohol", "LTBI_Diabetes", "LTBI_Malnourished", "LTBI_Pregnant") ## , "LTBI_Parasites")  
+
+colData(nano_data_all)$TB_status[colData(nano_data_all)$Alcohol=="Yes"]="LTBI_Alcohol"
+colData(nano_data_all)$TB_status[colData(nano_data_all)$Diabetes=="Yes"]="LTBI_Diabetes"
+colData(nano_data_all)$TB_status[colData(nano_data_all)$Malnourished=="Yes"]="LTBI_Malnourished"
+colData(nano_data_all)$TB_status[colData(nano_data_all)$Pregnant=="Yes"]="LTBI_Pregnant"
+#colData(nano_data_all)$TB_status[colData(nano_data_all)$Parasites=="Yes"]="LTBI_Parasites"
+
+```
+
+## For LTBI only
+```{r }
+nano_data_ltbi = nano_data_all[,colData(nano_data_all)$TB_status != "TB"]
+colData(nano_data_ltbi)$TB_status = factor(colData(nano_data_ltbi)$TB_status, levels=c("LTBI", "LTBI_Alcohol", "LTBI_Diabetes", "LTBI_Malnourished", "LTBI_Pregnant")) # , "LTBI_Parasites"))
+```
+
+
+# Dimension Reduction Plots {.tabset}
+
+## PCA  {.tabset}
+Using the DESeq object and PCAplot function on the LogCPM data
+
+### All Data
+
+```{r PCA plots logCPM all data}
+
+nano_data_tmp <- SummarizedExperiment(assays=list(counts=assays(nano_data_all)$log_cpm),
+                     colData = colData(nano_data_all))
+
+plotPCA( DESeqTransform(nano_data_tmp), intgroup = "TB_status")
+
+```
+
+### TB/LTBI only 
+
+```{r PCA plots logCPM TB/LTBI}
+
+nano_data_tmp <- SummarizedExperiment(assays=list(counts=assays(nano_data_nocomorbs)$log_cpm),
+                     colData = colData(nano_data_nocomorbs))
+
+plotPCA( DESeqTransform(nano_data_tmp), intgroup = "TB_status")
+
+```
+
+### LTBI only 
+
+```{r}
+
+nano_data_tmp <- SummarizedExperiment(assays=list(counts=assays(nano_data_ltbi)$log_cpm),
+                     colData = colData(nano_data_ltbi))
+
+plotPCA( DESeqTransform(nano_data_tmp), intgroup = "TB_status")
+
+```
+
+## tSNE {.tabset}
+
+### All Data
+
+```{r}
+assay_type = "log_cpm"
+
+set.seed(1)
+tsne_out <- Rtsne(t(assay(nano_data_all,assay_type)), check_duplicates = FALSE, pca = TRUE, perplexity=10, theta=0.5, dims=2)
+
+embedding <- as.data.frame(tsne_out$Y)
+embedding$Class <- as.factor(nano_data_all$TB_status)
+
+g <- ggplot(embedding, aes(x=V1, y=V2, color=Class, label = colnames(assay(nano_data_all,assay_type)))) + geom_point(size=1.5) + xlab("T-SNE 1") + ylab("T-SNE 2") + theme(plot.title = element_text(hjust = 0.5)) + 
+ggtitle("TSNE Plot")
+
+plot(g)
+```
+
+### TB/LTBI only
+
+```{r}
+assay_type = "log_cpm"
+
+set.seed(1)
+tsne_out <- Rtsne(t(assay(nano_data_nocomorbs,assay_type)), check_duplicates = FALSE, pca = TRUE, perplexity=10, theta=0.5, dims=2)
+
+embedding <- as.data.frame(tsne_out$Y)
+embedding$Class <- as.factor(nano_data_nocomorbs$TB_status)
+
+g <- ggplot(embedding, aes(x=V1, y=V2, color=Class, label = colnames(assay(nano_data_nocomorbs,assay_type)))) + geom_point(size=1.5) + xlab("T-SNE 1") + ylab("T-SNE 2") + theme(plot.title = element_text(hjust = 0.5)) + 
+ggtitle("TSNE Plot")
+
+plot(g)
+```
+
+### LTBI only
+
+```{r}
+assay_type = "log_cpm"
+
+set.seed(1)
+tsne_out <- Rtsne(t(assay(nano_data_ltbi,assay_type)), check_duplicates = FALSE, pca = TRUE, perplexity=10, theta=0.5, dims=2)
+
+embedding <- as.data.frame(tsne_out$Y)
+embedding$Class <- as.factor(nano_data_ltbi$TB_status)
+
+g <- ggplot(embedding, aes(x=V1, y=V2, color=Class, label = colnames(assay(nano_data_ltbi,assay_type)))) + geom_point(size=1.5) + xlab("T-SNE 1") + ylab("T-SNE 2") + theme(plot.title = element_text(hjust = 0.5)) + 
+ggtitle("TSNE Plot")
+
+plot(g)
+```
+
+## UMAP {.tabset}
+
+### All Data
+
+```{r}
+assay_type = "log_cpm"
+
+set.seed(1)
+umap_out <- umap(t(assay(nano_data_all,assay_type)))
+
+embedding <- as.data.frame(umap_out$layout)
+embedding$Class <- as.factor(nano_data_all$TB_status)
+
+g <- ggplot(embedding, aes(x=V1, y=V2, color=Class, label = colnames(assay(nano_data_all,assay_type)))) + geom_point(size=1.5) + xlab("UMAP 1") + ylab("UMAP 2") + theme(plot.title = element_text(hjust = 0.5)) + 
+ggtitle("UMAP Plot")
+
+plot(g)
+```
+
+### LTBI only
+
+```{r}
+assay_type = "log_cpm"
+
+set.seed(1)
+umap_out <- umap(t(assay(nano_data_nocomorbs,assay_type)))
+
+embedding <- as.data.frame(umap_out$layout)
+embedding$Class <- as.factor(nano_data_nocomorbs$TB_status)
+
+g <- ggplot(embedding, aes(x=V1, y=V2, color=Class, label = colnames(assay(nano_data_nocomorbs,assay_type)))) + geom_point(size=1.5) + xlab("UMAP 1") + ylab("UMAP 2") + theme(plot.title = element_text(hjust = 0.5)) + 
+ggtitle("UMAP Plot")
+
+plot(g)
+```
+
+### LTBI only
+
+```{r}
+assay_type = "log_cpm"
+
+set.seed(1)
+umap_out <- umap(t(assay(nano_data_ltbi,assay_type)))
+
+embedding <- as.data.frame(umap_out$layout)
+embedding$Class <- as.factor(nano_data_ltbi$TB_status)
+
+g <- ggplot(embedding, aes(x=V1, y=V2, color=Class, label = colnames(assay(nano_data_ltbi,assay_type)))) + geom_point(size=1.5) + xlab("UMAP 1") + ylab("UMAP 2") + theme(plot.title = element_text(hjust = 0.5)) + 
+ggtitle("UMAP Plot")
+
+plot(g)
+```
+
+# Differential Expression Limma {.tabset}
+
+## All Data {.tabset}
+```{r}
+designTB_status <- model.matrix(~TB_status, data=colData(nano_data_all))
+
+#designGroup
+####colnames(designTB_status)
+
+fitTB_status <- lmFit(assay(nano_data_all, "log_cpm"), designTB_status)
+contrast.matrixTB_status<- makeContrasts(TB_statusLTBI, levels = designTB_status)
+fitTB_status <- contrasts.fit(fitTB_status,contrast.matrixTB_status)
+fitTB_status <- eBayes(fitTB_status)
+
+#get full differential expression output table, sorted by p-value
+limmaResTB_status <- topTable(fitTB_status, adjust.method = "BH", n = Inf, sort.by = "P")
+#Getting significant genes and rownames to plot
+adjpcutoff <- 0.05
+limmaResTB_status.sig <- subset(limmaResTB_status, adj.P.Val < adjpcutoff)
+sigGenesTB <-rownames(limmaResTB_status.sig)
+
+#length(sigGenesTB) ## 100 of the 107 genes are significant with FDR 0.05
+
+```
+
+### Results table
+```{r}
+datatable(limmaResTB_status ,options=list(scrollX=T,pageLength=10),rownames = T)
+```
+
+### Heatmap
+```{r}
+# Make a Heatmap of all genes
+mat = as.matrix(assay(nano_data_all,"log_cpm"))
+mat = t(scale(t(mat)))
+
+df=data.frame(TB_status=colData(nano_data_all)$TB_status) 
+
+ha = HeatmapAnnotation(df = df, col = list(TB_status=c("TB"="Red","LTBI"="Blue", "LTBI_Alcohol"="Yellow", "LTBI_Malnourished"="Green",
+"LTBI_Diabetes"="Purple",
+"LTBI_Pregnant"="Orange" #,
+#"LTBI_Parasites"="Grey"
+)))
+
+Heatmap(mat,show_row_names=F,show_column_names = F, top_annotation = ha)
+```
+
+## TB/LTBI only {.tabset}
+
+```{r}
+designTB_status <- model.matrix(~TB_status, data=colData(nano_data_nocomorbs))
+
+#designGroup
+###colnames(designTB_status)
+
+fitTB_status <- lmFit(assay(nano_data_nocomorbs, "log_cpm"), designTB_status)
+contrast.matrixTB_status<- makeContrasts(TB_statusLTBI, levels = designTB_status)
+fitTB_status <- contrasts.fit(fitTB_status,contrast.matrixTB_status)
+fitTB_status <- eBayes(fitTB_status)
+
+#get full differential expression output table, sorted by p-value
+limmaResTB_status <- topTable(fitTB_status, adjust.method = "BH", n = Inf, sort.by = "P")
+
+#Getting significant genes and rownames to plot
+adjpcutoff <- 0.05
+limmaResTB_status.sig <- subset(limmaResTB_status, adj.P.Val < adjpcutoff)
+sigGenesTB <-rownames(limmaResTB_status.sig)
+
+#length(sigGenesTB) ## 101 of the 107 genes are significant with FDR 0.05
+```
+
+### Results table
+```{r}
+datatable(limmaResTB_status ,options=list(scrollX=T,pageLength=10),rownames = T)
+```
+
+### Heatmap
+```{r}
+# Make a Heatmap of all genes
+mat = as.matrix(assay(nano_data_nocomorbs,"log_cpm"))
+mat = t(scale(t(mat)))
+
+df=data.frame(TB_status=colData(nano_data_nocomorbs)$TB_status) 
+
+### 8/2/2021 changed color for LTBI to address reviewer comment
+ha = HeatmapAnnotation(df = df, col = list(TB_status=c("TB"="Red","LTBI"="#00AFBB"))) #4DB6D0
+
+Heatmap(mat,show_row_names=F,show_column_names = F, top_annotation = ha)
+```
+
+#### 8/2/2021 added Zhao_6 to address reviewer comment
+```{r}
+# Make a NANO6 of all genes
+Zhao_NANO_6 = as.matrix(assay(nano_data_nocomorbs,"log_cpm"))[which(rownames(nano_data_nocomorbs) %in% c("ANKRD22","ATP1A1","BLK","CCR6","DARS2","EXOC2")),]
+Zhao_NANO_6 = t(scale(t(Zhao_NANO_6)))
+
+df=data.frame(TB_status=colData(nano_data_nocomorbs)$TB_status) 
+
+### 8/2/2021 changed color for LTBI to address reviewer comment
+ha = HeatmapAnnotation(df = df, col = list(TB_status=c("TB"="Red","LTBI"="#00AFBB"))) #4DB6D0
+
+Heatmap(Zhao_NANO_6,show_row_names=T,show_column_names = F, top_annotation = ha)
+```
+
+
+
+## LTBI only {.tabset}
+
+
+```{r}
+designTB_status <- model.matrix(~TB_status, data=colData(nano_data_ltbi))
+
+#designGroup
+###colnames(designTB_status)
+
+```
+
+### LTBI vs. LTBI_Alcohol {.tabset}
+
+```{r}
+
+fitTB_status <- lmFit(assay(nano_data_ltbi, "log_cpm"), designTB_status)
+contrast.matrixTB_status<- makeContrasts(TB_statusLTBI_Alcohol, levels = designTB_status)
+fitTB_status <- contrasts.fit(fitTB_status,contrast.matrixTB_status)
+fitTB_status <- eBayes(fitTB_status)
+
+#get full differential expression output table, sorted by p-value
+limmaResTB_status <- topTable(fitTB_status, adjust.method = "BH", n = Inf, sort.by = "P")
+
+#Getting significant genes and rownames to plot
+adjpcutoff <- 0.05
+limmaResTB_status.sig <- subset(limmaResTB_status, adj.P.Val < adjpcutoff)
+sigGenesTB <-rownames(limmaResTB_status.sig)
+
+length(sigGenesTB) ## 10 of the 107 genes are significant with FDR 0.05 for alcohol
+```
+
+#### Results table
+```{r}
+datatable(limmaResTB_status ,options=list(scrollX=T,pageLength=10),rownames = T)
+```
+
+#### Heatmap
+```{r}
+# Make a Heatmap of all genes
+subset = nano_data_ltbi[sigGenesTB, colData(nano_data_ltbi)$TB_status %in% c("LTBI", "LTBI_Alcohol")]
+mat = as.matrix(assay(subset,"log_cpm"))
+mat = t(scale(t(mat)))
+
+df=data.frame(TB_status=subset$TB_status) 
+
+ha = HeatmapAnnotation(df = df, col = list(TB_status=c("LTBI"="Blue", "LTBI_Alcohol"="Red")))
+
+Heatmap(mat,show_row_names=T,show_column_names = F, top_annotation = ha, column_split=subset$TB_status)
+```
+
+### LTBI vs. LTBI_Diabetes {.tabset}
+
+```{r}
+
+fitTB_status <- lmFit(assay(nano_data_ltbi, "log_cpm"), designTB_status)
+contrast.matrixTB_status<- makeContrasts(TB_statusLTBI_Diabetes, levels = designTB_status)
+fitTB_status <- contrasts.fit(fitTB_status,contrast.matrixTB_status)
+fitTB_status <- eBayes(fitTB_status)
+
+#get full differential expression output table, sorted by p-value
+limmaResTB_status <- topTable(fitTB_status, adjust.method = "BH", n = Inf, sort.by = "P")
+
+#Getting significant genes and rownames to plot
+adjpcutoff <- 0.05
+limmaResTB_status.sig <- subset(limmaResTB_status, adj.P.Val < adjpcutoff)
+sigGenesTB <-rownames(limmaResTB_status.sig)
+
+length(sigGenesTB) ## 5 of the 107 genes are significant with FDR 0.05 for alcohol
+```
+
+#### Results table
+```{r}
+datatable(limmaResTB_status ,options=list(scrollX=T,pageLength=10),rownames = T)
+```
+
+#### Heatmap
+```{r}
+
+# Make a Heatmap of all genes
+subset = nano_data_ltbi[sigGenesTB, colData(nano_data_ltbi)$TB_status %in% c("LTBI", "LTBI_Diabetes")]
+mat = as.matrix(assay(subset,"log_cpm"))
+mat = t(scale(t(mat)))
+
+df=data.frame(TB_status=subset$TB_status) 
+
+ha = HeatmapAnnotation(df = df, col = list(TB_status=c("LTBI"="Blue", "LTBI_Diabetes"="Red")))
+
+Heatmap(mat,show_row_names=T,show_column_names = F, top_annotation = ha, column_split=subset$TB_status)
+```
+
+### LTBI vs. LTBI_Malnourished {.tabset}
+
+```{r}
+
+fitTB_status <- lmFit(assay(nano_data_ltbi, "log_cpm"), designTB_status)
+contrast.matrixTB_status<- makeContrasts(TB_statusLTBI_Malnourished, levels = designTB_status)
+fitTB_status <- contrasts.fit(fitTB_status,contrast.matrixTB_status)
+fitTB_status <- eBayes(fitTB_status)
+
+#get full differential expression output table, sorted by p-value
+limmaResTB_status <- topTable(fitTB_status, adjust.method = "BH", n = Inf, sort.by = "P")
+
+#Getting significant genes and rownames to plot
+adjpcutoff <- 0.1
+limmaResTB_status.sig <- subset(limmaResTB_status, adj.P.Val < adjpcutoff)
+sigGenesTB <-rownames(limmaResTB_status.sig)
+
+length(sigGenesTB) ## 5 of the 107 genes are significant with FDR 0.05 for alcohol
+
+```
+
+#### Results table
+```{r}
+datatable(limmaResTB_status ,options=list(scrollX=T,pageLength=10),rownames = T)
+```
+
+#### Heatmap
+```{r}
+
+# Make a Heatmap of all genes
+subset = nano_data_ltbi[sigGenesTB, colData(nano_data_ltbi)$TB_status %in% c("LTBI", "LTBI_Malnourished")]
+mat = as.matrix(assay(subset,"log_cpm"))
+mat = t(scale(t(mat)))
+
+df=data.frame(TB_status=subset$TB_status) 
+
+ha = HeatmapAnnotation(df = df, col = list(TB_status=c("LTBI"="Blue", "LTBI_Malnourished"="Red")))
+
+Heatmap(mat,show_row_names=T,show_column_names = F, top_annotation = ha, column_split=subset$TB_status)
+```
+
+### LTBI vs. LTBI_Pregnant {.tabset}
+
+```{r}
+fitTB_status <- lmFit(assay(nano_data_ltbi, "log_cpm"), designTB_status)
+contrast.matrixTB_status<- makeContrasts(TB_statusLTBI_Pregnant, levels = designTB_status)
+fitTB_status <- contrasts.fit(fitTB_status,contrast.matrixTB_status)
+fitTB_status <- eBayes(fitTB_status)
+
+#get full differential expression output table, sorted by p-value
+limmaResTB_status <- topTable(fitTB_status, adjust.method = "BH", n = Inf, sort.by = "P")
+
+#Getting significant genes and rownames to plot
+adjpcutoff <- 0.05
+limmaResTB_status.sig <- subset(limmaResTB_status, adj.P.Val < adjpcutoff)
+sigGenesTB <-rownames(limmaResTB_status.sig)
+
+length(sigGenesTB) ## 27 of the 107 genes are significant with FDR 0.05 for alcohol
+```
+
+#### Results table
+```{r}
+datatable(limmaResTB_status ,options=list(scrollX=T,pageLength=10),rownames = T)
+```
+
+#### Heatmap
+```{r}
+
+# Make a Heatmap of all genes
+subset = nano_data_ltbi[sigGenesTB, colData(nano_data_ltbi)$TB_status %in% c("LTBI", "LTBI_Pregnant")]
+mat = as.matrix(assay(subset,"log_cpm"))
+mat = t(scale(t(mat)))
+
+df=data.frame(TB_status=subset$TB_status) 
+
+ha = HeatmapAnnotation(df = df, col = list(TB_status=c("LTBI"="Blue", "LTBI_Pregnant"="Red")))
+
+Heatmap(mat,show_row_names=T,show_column_names = F, top_annotation = ha, column_split=subset$TB_status)
+```
+
+### LTBI vs. LTBI_Parasites {.tabset}
+
+```{r, eval=F}
+fitTB_status <- lmFit(assay(nano_data_ltbi, "log_cpm"), designTB_status)
+contrast.matrixTB_status<- makeContrasts(TB_statusLTBI_Parasites, levels = designTB_status)
+fitTB_status <- contrasts.fit(fitTB_status,contrast.matrixTB_status)
+fitTB_status <- eBayes(fitTB_status)
+
+#get full differential expression output table, sorted by p-value
+limmaResTB_status <- topTable(fitTB_status, adjust.method = "BH", n = Inf, sort.by = "P")
+
+#Getting significant genes and rownames to plot
+adjpcutoff <- 0.05
+limmaResTB_status.sig <- subset(limmaResTB_status, adj.P.Val < adjpcutoff)
+sigGenesTB <-rownames(limmaResTB_status.sig)
+
+length(sigGenesTB) ## 3of the 107 genes are significant with FDR 0.05 for alcohol
+
+```
+
+#### Results table
+```{r, eval=F}
+datatable(limmaResTB_status ,options=list(scrollX=T,pageLength=10),rownames = T)
+```
+
+#### Heatmap
+```{r, eval=F}
+# Make a Heatmap of all genes
+subset = nano_data_ltbi[sigGenesTB, colData(nano_data_ltbi)$TB_status %in% c("LTBI", "LTBI_Parasites")]
+mat = as.matrix(assay(subset,"log_cpm"))
+mat = t(scale(t(mat)))
+
+df=data.frame(TB_status=subset$TB_status) 
+
+ha = HeatmapAnnotation(df = df, col = list(TB_status=c("LTBI"="Blue", "LTBI_Parasites"="Red")))
+
+Heatmap(mat,show_row_names=T,show_column_names = F, top_annotation = ha, column_split=subset$TB_status)
+```
+
+
+# TBSignatureProfiler {.tabset}
+
+Get all the Gene Lists organized and add an 'all genes' marker
+
+```{r, message=FALSE}
+
+TBsignatures$'Zhao_NANO_6' <- c("ANKRD22","ATP1A1","BLK","CCR6","DARS2","EXOC2")
+#tmp = nano_data_all[which(rownames(nano_data_all)=="ANKRD22"),]; rownames(tmp) <- "ANKRD22_neg"; assay(tmp, 'log_cpm') <- -1*assay(tmp, 'log_cpm'); nano_data_all <- rbind(nano_data_all, tmp)
+
+# Fix Jacobsen and Sloot
+TBsignatures$'Jacobsen_3' <- c("LTF", "FCGR1A", "Rab33A")
+#tmp = nano_data_all[which(rownames(nano_data_all)=="Rab33A"),]; rownames(tmp) <- "Rab33A_neg"; assay(tmp, 'log_cpm') <- -1*assay(tmp, 'log_cpm'); nano_data_all <- rbind(nano_data_all, tmp)
+
+TBsignatures$'Sloot_HIV_2' <- c("IL-13", "AIRE")
+
+# Add/Fix RISK_4: 
+TBsignatures$'Suliman_RISK_4' <- c("GAS6","SEPTIN4","CD1C","BLK")
+TBsignatures$'Suliman_4' <- c("ANKRD22", "C1QC", "OSBPL10", "TRAV27") 
+
+# Add/Fix Thompson_9 and Thompson_FAIL_13: 
+TBsignatures$Thompson_9 <- c("ANKRD22","VPS9D1","FCER1G","FCGR1A","FCGR1B","GYG1","SECTM1","SMARCD3","C16orf7")
+TBsignatures$Thompson_FAIL_13 <- c("ATP1A1","CXorf40B","DARS2","EXOC2","EMC1","KIAA0090","KIAA0100","KIAA0564","VWA8","MAP7D3","PSMD1","SEC31A","SND1","ST3A","UCP2")
+
+
+# Add Predict29: 
+#TBsignatures$'Leong_RISK_29'<- c("SRBD1", "ZNF419", "SH2D1B", "CTSA", "GSTA4", "AGAP9", "MOB3C", "WARS", "LUC7L", "ZNRF1", "CIRBP", "PRSS53", "APOL6", "TCN2", "MDN1", "SNRNP70", "SLC3A1", "NAGA", "SPDYE5", "SPSB1", "CCDC14", "IL31RA", "DERA", "FUT4", "NEIL1", "ENO3", "CCDC78", "HM13", "ZNF202")
+
+
+### Check Nanostring coverage (10/4/2021)
+coverage<-NULL
+for (i in TBsignatures){coverage <- c(coverage,mean(i %in% rownames(nano_data_all)))}
+names(coverage)= names(TBsignatures)
+sort(coverage, decreasing = T)
+
+
+# Make a nanostring signature list
+siglist_nano <- c( "Jacobsen_3", "Kaforou_27", "Leong_RISK_29", "Maertzdorf_4", "PennNich_RISK_6", "Darboe_RISK_11", "Sambarey_HIV_10", "Suliman_RISK_4", "Sweeney_OD_3", "Sloot_HIV_2", "Thompson_9", "Thompson_FAIL_13","Thompson_RES_5", "Zak_RISK_16",'Zhao_NANO_6') 
+
+### Signature list with >50% coverage on nanostring (10/4/2021)
+#siglist_nano <- names(which(coverage>.5))
+
+TBsignatures_nanostring <- TBsignatures[siglist_nano]
+
+
+
+# Add a signature with all Genes:
+#TBsignatures_nanostring$'All_Genes' <- rownames(nano_data_all)[1:106]
+#siglist_nano <- c( "Jacobsen_3", "Kaforou_27", "Leong_RISK_29", "Maertzdorf_4", "Sambarey_HIV_10", "Suliman_RISK_4", "Sweeney_OD_3", "Sloot_HIV_2", "Thompson_9", "Thompson_FAIL_13","Thompson_RES_5", "Zak_RISK_16",'Zhao_NANO_6',"All_Genes") 
+
+names(TBsignatures_nanostring)
+
+#genes=sort(unique(unlist(TBsignatures_nanostring)))
+#sig_list = list()
+#for (x in genes){sig_list[[x]]=NULL; for (y in names(TBsignatures_nanostring)){if(x %in% TBsignatures_nanostring[y][[1]]){sig_list[[x]]=c(sig_list[[x]],y)}}}
+#sig_list
+```
+
+## All Data {.tabset}
+
+```{r, message=FALSE, results='hide'}
+
+# SignatureProfiler {.tabset}
+ssgsea_res_all <- runTBsigProfiler(nano_data_all, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "ssGSEA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+
+
+gsva_res_all <- runTBsigProfiler(nano_data_all, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "GSVA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+
+
+```
+
+### ssGSEA {.tabset}
+
+#### Sens/Spec Analysis
+
+```{r}
+sigcols <- which(colnames(colData(ssgsea_res_all)) %in% siglist_nano)
+sig_data <- colData(ssgsea_res_all)[,sigcols]
+TB_samples <- which(ssgsea_res_all$TB_status=="TB")
+
+sig_data$Leong_RISK_29 <- -1*sig_data$Leong_RISK_29
+sig_data$Suliman_RISK_4 <- -1*sig_data$Suliman_RISK_4
+sig_data$Thompson_RES_5 <- -1*sig_data$Thompson_RES_5
+sig_data$Thompson_FAIL_13 <- -1*sig_data$Thompson_FAIL_13
+sig_data$Zhao_NANO_6 <- -1*sig_data$Zhao_NANO_6
+sig_data$Sloot_HIV_2 <- -1*sig_data$Sloot_HIV_2
+
+cutoffs <- apply(sig_data[TB_samples,], 2, quantile, .1)
+
+specificity <- NULL; count <- NULL; above_cut <- NULL
+for (i in siglist_nano){
+  tmp_specs <- NULL; tmp_count <- NULL
+  for (j in levels(ssgsea_res_all$TB_status)){
+    tmp_specs <- c(tmp_specs,mean(sig_data[ssgsea_res_all$TB_status==j,i] > cutoffs[i]))
+    tmp_count <- c(tmp_count,sum(sig_data[ssgsea_res_all$TB_status==j,i] > cutoffs[i]))
+  }
+  names(tmp_specs) <- names(tmp_count) <- levels(ssgsea_res_all$TB_status)
+  specificity <- rbind(specificity,tmp_specs)
+  count <- rbind(count,tmp_count)
+  above_cut <- cbind(above_cut,sig_data[,i] > cutoffs[i])
+}
+rownames(specificity) <- rownames(count) <- colnames(above_cut) <- siglist_nano
+rownames(above_cut) <- colnames(ssgsea_res_all)
+
+### Totals: 
+table(ssgsea_res_all$TB_status)
+
+##
+datatable(count)
+datatable(round(specificity,3))
+```
+
+#### TB samples--correct ID
+```{r}
+# some things related to colors
+special_red <- RColorBrewer::brewer.pal(3, "Set1")[1]
+special_blue <- RColorBrewer::brewer.pal(3, "Set1")[2]
+
+for (i in levels(nano_data_all$TB_status)){
+    draw(Heatmap(1*(above_cut[nano_data_all$TB_status==i,]), 
+                 col=c("white", special_blue), 
+               row_names_gp = gpar(fontsize = 5), 
+               column_names_gp = gpar(fontsize = 8), 
+               name = "Above Cutoff (0=No, 1=Yes)",
+                cluster_columns = T, cluster_rows = T,
+               column_title = i), 
+       heatmap_legend_side = "right")
+}
+  
+```
+
+
+#### Signature Heatmap
+```{r}
+# Colors for gradient
+signatureHeatmap(ssgsea_res_all, name = "Heatmap of Signatures (ssGSEA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+#### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(ssgsea_res_all, name="ssGSEA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"), rotateLabels = T)
+```
+
+#### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("#####" , i, "\n")
+
+  print(signatureBoxplot(ssgsea_res_all, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), rotateLabels = T ))
+  
+  cat("\n\n")
+}
+
+```
+
+#### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("#####" , i, "\n")
+
+  signatureGeneHeatmap(ssgsea_res_all, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                     annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+
+#### AUC Table (Ignores RFs)
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(ssgsea_res_all, 
+         annotationColName = "TB_LTBI", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+#### AUC Boxplots (Ignores RFs)
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(ssgsea_res_all, annotationColName = "TB_LTBI",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+#### ROC plots (Ignores RFs)
+```{r, message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = ssgsea_res_all,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_LTBI")
+
+```
+
+#### Separate ROC plots (Ignores RFs) {.tabset}
+ 
+```{r, results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("#####" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = ssgsea_res_all, 
+                   signatureColNames = i,
+                   annotationColName = "TB_LTBI",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+### GSVA {.tabset}
+
+#### Sens/Spec Analysis
+
+```{r}
+sigcols <- which(colnames(colData(gsva_res_all)) %in% siglist_nano)
+sig_data <- colData(gsva_res_all)[,sigcols]
+TB_samples <- which(gsva_res_all$TB_status=="TB")
+
+sig_data$Leong_RISK_29 <- -1*sig_data$Leong_RISK_29
+sig_data$Suliman_RISK_4 <- -1*sig_data$Suliman_RISK_4
+sig_data$Thompson_RES_5 <- -1*sig_data$Thompson_RES_5
+sig_data$Thompson_FAIL_13 <- -1*sig_data$Thompson_FAIL_13
+sig_data$Zhao_NANO_6 <- -1*sig_data$Zhao_NANO_6
+sig_data$Sloot_HIV_2 <- -1*sig_data$Sloot_HIV_2
+
+cutoffs <- apply(sig_data[TB_samples,], 2, quantile, .1)
+
+specificity <- NULL; count <- NULL; above_cut <- NULL
+for (i in siglist_nano){
+  tmp_specs <- NULL; tmp_count <- NULL
+  for (j in levels(gsva_res_all$TB_status)){
+    tmp_specs <- c(tmp_specs,mean(sig_data[gsva_res_all$TB_status==j,i] > cutoffs[i]))
+    tmp_count <- c(tmp_count,sum(sig_data[gsva_res_all$TB_status==j,i] > cutoffs[i]))
+  }
+  names(tmp_specs) <- names(tmp_count) <- levels(gsva_res_all$TB_status)
+  specificity <- rbind(specificity,tmp_specs)
+  count <- rbind(count,tmp_count)
+  above_cut <- cbind(above_cut,sig_data[,i] > cutoffs[i])
+}
+rownames(specificity) <- rownames(count) <- colnames(above_cut) <- siglist_nano
+rownames(above_cut) <- colnames(gsva_res_all)
+
+### Totals: 
+table(gsva_res_all$TB_status)
+
+##
+datatable(count)
+datatable(round(specificity,3))
+```
+
+#### TB samples--correct ID
+```{r}
+# some things related to colors
+#special_red <- RColorBrewer::brewer.pal(3, "Set1")[1]
+special_blue <- RColorBrewer::brewer.pal(3, "Set1")[2]
+
+for (i in levels(nano_data_all$TB_status)){
+    draw(Heatmap(1*(above_cut[nano_data_all$TB_status==i,]), 
+                 col=c("white", special_blue), 
+               row_names_gp = gpar(fontsize = 5), 
+               column_names_gp = gpar(fontsize = 8), 
+               name = "Above Cutoff (0=No, 1=Yes)",
+                cluster_columns = T, cluster_rows = T,
+               column_title = i), 
+       heatmap_legend_side = "right")
+}
+  
+```
+
+
+#### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(gsva_res_all, name = "Heatmap of Signatures (GSVA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+
+#### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(gsva_res_all, name="GSVA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"), rotateLabels = T)
+```
+
+#### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("#####" , i, "\n")
+
+  print(signatureBoxplot(gsva_res_all, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), rotateLabels = T))
+  
+  cat("\n\n")
+}
+```
+
+#### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("#####" , i, "\n")
+
+  signatureGeneHeatmap(gsva_res_all, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                     annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+#### AUC Table (Ignores RFs)
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(gsva_res_all, 
+         annotationColName = "TB_LTBI", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+#### AUC Boxplots (Ignores RFs)
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(gsva_res_all, annotationColName = "TB_LTBI",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+#### ROC plots (Ignores RFs)
+```{r, message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = gsva_res_all,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_LTBI")
+
+```
+
+#### Separate ROC plots (Ignores RFs) {.tabset}
+ 
+```{r, results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("#####" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = gsva_res_all, 
+                   signatureColNames = i,
+                   annotationColName = "TB_LTBI",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+## TB/LTBI Only {.tabset}
+
+```{r, message=FALSE, results='hide'}
+
+# SignatureProfiler {.tabset}
+ssgsea_res_nocomorbs <- runTBsigProfiler(nano_data_nocomorbs, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "ssGSEA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+
+gsva_res_nocomorbs <- runTBsigProfiler(nano_data_nocomorbs, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "GSVA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+```
+
+
+### ssGSEA {.tabset}
+
+#### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(ssgsea_res_nocomorbs, name = "Heatmap of Signatures (ssGSEA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+#### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(ssgsea_res_nocomorbs, name="ssGSEA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+#### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("#####" , i, "\n")
+
+  print(signatureBoxplot(ssgsea_res_nocomorbs, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+#### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("#####" , i, "\n")
+
+  signatureGeneHeatmap(ssgsea_res_nocomorbs, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+#### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(ssgsea_res_nocomorbs, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+#### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(ssgsea_res_nocomorbs, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+#### ROC plots
+ 
+```{r, message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = ssgsea_res_nocomorbs,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+#### Separate ROC plots {.tabset}
+ 
+```{r, results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("#####" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = ssgsea_res_nocomorbs, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+### GSVA {.tabset}
+
+#### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(gsva_res_nocomorbs, name = "Heatmap of Signatures (GSVA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+#### Signature Boxplots
+
+```{r boxgsva_nocomorbs, fig.width=12, fig.height=9}
+signatureBoxplot(gsva_res_nocomorbs, name="GSVA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+#### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("#####" , i, "\n")
+
+  print(signatureBoxplot(gsva_res_nocomorbs, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+#### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("#####" , i, "\n")
+
+  signatureGeneHeatmap(gsva_res_nocomorbs, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+#### Signature Gene Heatmaps 2 added for paper figures 7/26/21 {.tabset}
+```{r , results="asis"}
+
+colData(gsva_res_nocomorbs)$"TB_Status" <- colData(gsva_res_nocomorbs)$TB_status
+levels(colData(gsva_res_nocomorbs)$"TB_Status") <- c("Active TB", "Latent")
+
+for (i in names(TBsignatures_nanostring)){
+
+  cat("#####" , i, "\n")
+
+  signatureGeneHeatmap(gsva_res_nocomorbs, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_Status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+
+#### AUC Table
+```{r AUC table, message = FALSE}
+set.seed(0)
+tableAUC(gsva_res_nocomorbs, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+#### AUC Boxplots
+
+```{r BS Boxplots, message = FALSE}
+set.seed(0)
+compareBoxplots(gsva_res_nocomorbs, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+#### ROC plots
+ 
+```{r ROC all, message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = gsva_res_nocomorbs,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+#### Separate ROC plots {.tabset}
+ 
+```{r ROC indiv, results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("#####" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = gsva_res_nocomorbs, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+
+
+## TB/LTBI_RF {.tabset}
+
+### TB/LTBI_Alcohol {.tabset}
+
+```{r, message=FALSE, results='hide'}
+nano_data_tmp <- nano_data_all[,colData(nano_data_all)$TB_status %in% c("TB", "LTBI_Alcohol")]
+nano_data_tmp$TB_status <- droplevels(nano_data_tmp$TB_status)
+  
+# SignatureProfiler {.tabset}
+ssgsea_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "ssGSEA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+
+gsva_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "GSVA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+```
+
+#### ssGSEA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(ssgsea_res_singlecomorb, name = "Heatmap of Signatures (ssGSEA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(ssgsea_res_singlecomorb, name="ssGSEA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(ssgsea_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(ssgsea_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(ssgsea_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(ssgsea_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r, message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = ssgsea_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r, results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = ssgsea_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+#### GSVA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(gsva_res_singlecomorb, name = "Heatmap of Signatures (GSVA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(gsva_res_singlecomorb, name="GSVA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(gsva_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(gsva_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(gsva_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(gsva_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r , message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = gsva_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r , results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = gsva_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+
+
+### TB/LTBI_Diabetes {.tabset}
+
+```{r, message=FALSE, results='hide'}
+nano_data_tmp <- nano_data_all[,colData(nano_data_all)$TB_status %in% c("TB", "LTBI_Diabetes")]
+nano_data_tmp$TB_status <- droplevels(nano_data_tmp$TB_status)
+  
+# SignatureProfiler {.tabset}
+ssgsea_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "ssGSEA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+
+gsva_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "GSVA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+```
+
+#### ssGSEA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(ssgsea_res_singlecomorb, name = "Heatmap of Signatures (ssGSEA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(ssgsea_res_singlecomorb, name="ssGSEA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(ssgsea_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(ssgsea_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(ssgsea_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(ssgsea_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r, message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = ssgsea_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r, results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = ssgsea_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+#### GSVA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(gsva_res_singlecomorb, name = "Heatmap of Signatures (GSVA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(gsva_res_singlecomorb, name="GSVA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(gsva_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(gsva_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(gsva_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(gsva_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r , message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = gsva_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r , results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = gsva_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+
+
+
+
+### TB/LTBI_Malnourished {.tabset}
+
+```{r, message=FALSE, results='hide'}
+nano_data_tmp <- nano_data_all[,colData(nano_data_all)$TB_status %in% c("TB", "LTBI_Malnourished")]
+nano_data_tmp$TB_status <- droplevels(nano_data_tmp$TB_status)
+  
+# SignatureProfiler {.tabset}
+ssgsea_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "ssGSEA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+
+gsva_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "GSVA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+```
+
+#### ssGSEA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(ssgsea_res_singlecomorb, name = "Heatmap of Signatures (ssGSEA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(ssgsea_res_singlecomorb, name="ssGSEA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(ssgsea_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(ssgsea_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(ssgsea_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(ssgsea_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r, message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = ssgsea_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r, results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = ssgsea_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+#### GSVA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(gsva_res_singlecomorb, name = "Heatmap of Signatures (GSVA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(gsva_res_singlecomorb, name="GSVA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(gsva_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(gsva_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(gsva_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(gsva_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r , message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = gsva_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r , results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = gsva_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+
+
+
+
+
+
+
+### TB/LTBI_Pregnant {.tabset}
+
+```{r, message=FALSE, results='hide'}
+nano_data_tmp <- nano_data_all[,colData(nano_data_all)$TB_status %in% c("TB", "LTBI_Pregnant")]
+nano_data_tmp$TB_status <- droplevels(nano_data_tmp$TB_status)
+  
+# SignatureProfiler {.tabset}
+ssgsea_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "ssGSEA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+
+gsva_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "GSVA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+```
+
+#### ssGSEA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(ssgsea_res_singlecomorb, name = "Heatmap of Signatures (ssGSEA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(ssgsea_res_singlecomorb, name="ssGSEA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(ssgsea_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(ssgsea_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(ssgsea_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(ssgsea_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r, message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = ssgsea_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r, results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = ssgsea_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+#### GSVA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(gsva_res_singlecomorb, name = "Heatmap of Signatures (GSVA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(gsva_res_singlecomorb, name="GSVA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(gsva_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(gsva_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(gsva_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(gsva_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r , message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = gsva_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r , results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = gsva_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+### TB/LTBI_Parasites {.tabset}
+
+```{r, message=FALSE, results='hide', eval=F}
+nano_data_tmp <- nano_data_all[,colData(nano_data_all)$TB_status %in% c("TB", "LTBI_Parasites")]
+nano_data_tmp$TB_status <- droplevels(nano_data_tmp$TB_status)
+  
+# SignatureProfiler {.tabset}
+ssgsea_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "ssGSEA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+
+gsva_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "GSVA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+```
+
+#### ssGSEA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(ssgsea_res_singlecomorb, name = "Heatmap of Signatures (ssGSEA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(ssgsea_res_singlecomorb, name="ssGSEA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(ssgsea_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(ssgsea_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(ssgsea_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(ssgsea_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r, message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = ssgsea_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r, results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = ssgsea_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+#### GSVA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(gsva_res_singlecomorb, name = "Heatmap of Signatures (GSVA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(gsva_res_singlecomorb, name="GSVA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(gsva_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(gsva_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(gsva_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(gsva_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r , message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = gsva_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r , results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = gsva_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+## LTBI Only {.tabset}
+
+```{r, message=FALSE, results='hide'}
+
+# SignatureProfiler {.tabset}
+ssgsea_res_ltbi <- runTBsigProfiler(nano_data_ltbi, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "ssGSEA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+
+gsva_res_ltbi <- runTBsigProfiler(nano_data_ltbi, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "GSVA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+
+
+```
+
+
+### ssGSEA {.tabset}
+
+#### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(ssgsea_res_ltbi, name = "Heatmap of Signatures (ssGSEA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+#### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(ssgsea_res_ltbi, name="ssGSEA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"), rotateLabels = T)
+```
+
+#### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("#####" , i, "\n")
+
+  print(signatureBoxplot(ssgsea_res_ltbi, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status") , rotateLabels = T))
+  
+  cat("\n\n")
+}
+
+```
+
+#### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("#####" , i, "\n")
+
+  signatureGeneHeatmap(ssgsea_res_ltbi, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+
+```
+
+### GSVA {.tabset}
+
+#### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(gsva_res_ltbi, name = "Heatmap of Signatures (GSVA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+#### Signature Boxplots
+
+```{r boxgsva_ltbi, fig.width=12, fig.height=9}
+signatureBoxplot(gsva_res_ltbi, name="GSVA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"), rotateLabels = T)
+```
+
+#### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("#####" , i, "\n")
+
+  print(signatureBoxplot(gsva_res_ltbi, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), rotateLabels = T))
+  
+  cat("\n\n")
+}
+
+```
+
+#### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+  
+for (i in names(TBsignatures_nanostring)){
+
+  
+  cat("#####" , i, "\n")
+
+  signatureGeneHeatmap(gsva_res_ltbi, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+
+```
+
+
+
+## LTBI/LTBI_RF {.tabset}
+
+### LTBI/LTBI_Alcohol {.tabset}
+
+```{r, message=FALSE, results='hide'}
+nano_data_tmp <- nano_data_all[,colData(nano_data_all)$TB_status %in% c("LTBI", "LTBI_Alcohol")]
+nano_data_tmp$TB_status <- droplevels(nano_data_tmp$TB_status)
+  
+# SignatureProfiler {.tabset}
+ssgsea_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "ssGSEA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+
+gsva_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "GSVA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+```
+
+#### ssGSEA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(ssgsea_res_singlecomorb, name = "Heatmap of Signatures (ssGSEA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(ssgsea_res_singlecomorb, name="ssGSEA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(ssgsea_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(ssgsea_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(ssgsea_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(ssgsea_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r, message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = ssgsea_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r, results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = ssgsea_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+#### GSVA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(gsva_res_singlecomorb, name = "Heatmap of Signatures (GSVA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(gsva_res_singlecomorb, name="GSVA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(gsva_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(gsva_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(gsva_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(gsva_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r , message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = gsva_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r , results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = gsva_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+### LTBI/LTBI_Diabetes {.tabset}
+
+```{r, message=FALSE, results='hide'}
+nano_data_tmp <- nano_data_all[,colData(nano_data_all)$TB_status %in% c("LTBI", "LTBI_Diabetes")]
+nano_data_tmp$TB_status <- droplevels(nano_data_tmp$TB_status)
+  
+# SignatureProfiler {.tabset}
+ssgsea_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "ssGSEA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+
+gsva_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "GSVA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+```
+
+#### ssGSEA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(ssgsea_res_singlecomorb, name = "Heatmap of Signatures (ssGSEA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(ssgsea_res_singlecomorb, name="ssGSEA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(ssgsea_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(ssgsea_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+ssgsea_res_singlecomorb$TB_status
+tableAUC(ssgsea_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(ssgsea_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r, message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = ssgsea_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r, results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = ssgsea_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+#### GSVA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(gsva_res_singlecomorb, name = "Heatmap of Signatures (GSVA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(gsva_res_singlecomorb, name="GSVA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(gsva_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(gsva_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(gsva_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(gsva_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r , message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = gsva_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r , results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = gsva_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+### LTBI/LTBI_Malnourished {.tabset}
+
+```{r, message=FALSE, results='hide'}
+nano_data_tmp <- nano_data_all[,colData(nano_data_all)$TB_status %in% c("LTBI", "LTBI_Malnourished")]
+nano_data_tmp$TB_status <- droplevels(nano_data_tmp$TB_status)
+  
+# SignatureProfiler {.tabset}
+ssgsea_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "ssGSEA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+
+gsva_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "GSVA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+```
+
+#### ssGSEA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(ssgsea_res_singlecomorb, name = "Heatmap of Signatures (ssGSEA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(ssgsea_res_singlecomorb, name="ssGSEA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(ssgsea_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(ssgsea_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(ssgsea_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(ssgsea_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r, message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = ssgsea_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r, results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = ssgsea_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+#### GSVA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(gsva_res_singlecomorb, name = "Heatmap of Signatures (GSVA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(gsva_res_singlecomorb, name="GSVA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(gsva_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(gsva_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(gsva_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(gsva_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r , message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = gsva_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r , results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = gsva_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+### LTBI/LTBI_Pregnant {.tabset}
+
+```{r, message=FALSE, results='hide'}
+nano_data_tmp <- nano_data_all[,colData(nano_data_all)$TB_status %in% c("LTBI", "LTBI_Pregnant")]
+nano_data_tmp$TB_status <- droplevels(nano_data_tmp$TB_status)
+  
+# SignatureProfiler {.tabset}
+ssgsea_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "ssGSEA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+
+gsva_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "GSVA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+```
+
+#### ssGSEA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(ssgsea_res_singlecomorb, name = "Heatmap of Signatures (ssGSEA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(ssgsea_res_singlecomorb, name="ssGSEA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(ssgsea_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(ssgsea_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(ssgsea_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(ssgsea_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r, message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = ssgsea_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r, results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = ssgsea_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+#### GSVA {.tabset}
+
+##### Signature Heatmap
+
+```{r}
+# Colors for gradient
+signatureHeatmap(gsva_res_singlecomorb, name = "Heatmap of Signatures (GSVA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9}
+signatureBoxplot(gsva_res_singlecomorb, name="GSVA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(gsva_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis"}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(gsva_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE}
+set.seed(0)
+tableAUC(gsva_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE}
+set.seed(0)
+compareBoxplots(gsva_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r , message = FALSE, fig.height = 9, fig.width = 12}
+signatureROCplot_CI(inputData = gsva_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r , results = 'asis', message = FALSE}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = gsva_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+
+### LTBI/LTBI_Parasites {.tabset}
+
+```{r, message=FALSE, results='hide', eval=F}
+nano_data_tmp <- nano_data_all[,colData(nano_data_all)$TB_status %in% c("LTBI", "LTBI_Parasites")]
+nano_data_tmp$TB_status <- droplevels(nano_data_tmp$TB_status)
+  
+# SignatureProfiler {.tabset}
+ssgsea_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "ssGSEA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+
+gsva_res_singlecomorb <- runTBsigProfiler(nano_data_tmp, useAssay = "log_cpm",
+                                 signatures = TBsignatures_nanostring,
+                                 algorithm = "GSVA",
+                                 combineSigAndAlgorithm = TRUE,
+                                 parallel.sz = 1)
+```
+
+#### ssGSEA {.tabset}
+
+##### Signature Heatmap
+
+```{r, eval=F}
+# Colors for gradient
+signatureHeatmap(ssgsea_res_singlecomorb, name = "Heatmap of Signatures (ssGSEA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9, eval=F}
+signatureBoxplot(ssgsea_res_singlecomorb, name="ssGSEA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis", eval=F}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(ssgsea_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis", eval=F}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(ssgsea_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE, eval=F}
+set.seed(0)
+tableAUC(ssgsea_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE, eval=F}
+set.seed(0)
+compareBoxplots(ssgsea_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r, message = FALSE, fig.height = 9, fig.width = 12, eval=F}
+signatureROCplot_CI(inputData = ssgsea_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r, results = 'asis', message = FALSE, eval=F}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = ssgsea_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+#### GSVA {.tabset}
+
+##### Signature Heatmap
+
+```{r, eval=F}
+# Colors for gradient
+signatureHeatmap(gsva_res_singlecomorb, name = "Heatmap of Signatures (GSVA)", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColNames = c("TB_status"),
+                 scale = TRUE,
+                 split_heatmap = "none",
+                 showColumnNames = FALSE)
+```
+
+##### Signature Boxplots
+
+```{r , fig.width=12, fig.height=9, eval=F}
+signatureBoxplot(gsva_res_singlecomorb, name="GSVA", 
+                 signatureColNames = names(TBsignatures_nanostring),
+                 annotationColName = c("TB_status"))
+```
+
+##### Boxplots Single {.tabset}
+
+```{r , results="asis", eval=F}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  print(signatureBoxplot(gsva_res_singlecomorb, name=i, signatureColNames = i,
+                 annotationColName = c("TB_status"), fill_colors = c(2,3)))
+  
+  cat("\n\n")
+}
+
+```
+
+##### Signature Gene Heatmaps {.tabset}
+
+```{r , results="asis", eval=F}
+for (i in names(TBsignatures_nanostring)){
+
+  cat("######" , i, "\n")
+
+  signatureGeneHeatmap(gsva_res_singlecomorb, useAssay="log_cpm", 
+                     TBsignatures_nanostring[[i]],
+                     name = i, signatureColNames = NULL, 
+                    annotationColNames = c(i,"TB_status"),
+                     showColumnNames = FALSE)
+  
+  cat("\n\n")
+}
+```
+
+##### AUC Table
+```{r, message = FALSE, eval=F}
+set.seed(0)
+tableAUC(gsva_res_singlecomorb, 
+         annotationColName = "TB_status", 
+         signatureColNames = names(TBsignatures_nanostring),
+         num.boot = 100, 
+         pb.show = FALSE)
+```
+
+##### AUC Boxplots
+
+```{r, message = FALSE, eval=F}
+set.seed(0)
+compareBoxplots(gsva_res_singlecomorb, annotationColName = "TB_status",
+                signatureColNames = names(TBsignatures_nanostring),
+                pb.show = FALSE, fill.col = "blue",
+                rotateLabels = TRUE)
+```
+
+##### ROC plots
+ 
+```{r , message = FALSE, fig.height = 9, fig.width = 12, eval=F}
+signatureROCplot_CI(inputData = gsva_res_singlecomorb,
+                   signatureColNames = names(TBsignatures_nanostring),
+                   annotationColName = "TB_status")
+
+```
+
+##### Separate ROC plots {.tabset}
+ 
+```{r , results = 'asis', message = FALSE, eval=F}
+for (i in names(TBsignatures_nanostring)){
+  
+  cat("######" , i, "\n")
+  
+  print(signatureROCplot_CI(inputData = gsva_res_singlecomorb, 
+                   signatureColNames = i,
+                   annotationColName = "TB_status",
+                   name = paste("ROC plot,", i, sep = " ")))
+  
+  cat("\n\n")
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Session Info
+
+```{r session info}
+sessionInfo()
+```
