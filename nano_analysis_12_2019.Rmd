@@ -329,6 +329,11 @@ df=data.frame(TB_status=colData(nano_data_nocomorbs)$TB_status)
 ha = HeatmapAnnotation(df = df, col = list(TB_status=c("TB"="Red","LTBI"="#00AFBB"))) #4DB6D0
 
 Heatmap(Zhao_NANO_6,show_row_names=T,show_column_names = F, top_annotation = ha)
+
+### high resolution for the paper! 12/16/21
+png(file="NANO6.png",width = 9, height =6, units = "in",res = 1200)
+Heatmap(Zhao_NANO_6,show_row_names=T,show_column_names = F, top_annotation = ha)
+dev.off()
 ```
 
 
@@ -3548,18 +3553,6 @@ for (i in names(TBsignatures_nanostring)){
   cat("\n\n")
 }
 ```
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # Session Info
